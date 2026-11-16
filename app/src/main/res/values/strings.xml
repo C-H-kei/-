@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">流年</string>
+    <string name="service_label">流年 · 短视频限制</string>
+    <string name="accessibility_desc">流年：自动识别你是否进入了短视频页面。进入后开始计时，达到设定时长后自动退出，帮你找回专注的时间。所有数据仅保存在本机，不联网、不上传。</string>
+</resources>

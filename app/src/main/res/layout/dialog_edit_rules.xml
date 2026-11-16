@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="类名关键字（逗号分隔）"
+        android:textStyle="bold" />
+    <EditText
+        android:id="@+id/etEditClass"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="例如：StoryVideoActivity" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="ViewId 关键字（逗号分隔）"
+        android:textStyle="bold" />
+    <EditText
+        android:id="@+id/etEditId"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="例如：story_view_pager" />
+
+</LinearLayout>

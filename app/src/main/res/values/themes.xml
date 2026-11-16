@@ -1,0 +1,12 @@
+<resources>
+    <!-- 这里把 Light 改成了 DayNight -->
+    <style name="Theme.BiliLimit" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/brand_pink</item>
+        <!-- 状态栏改为跟随背景色自动变化 -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@color/bg_color</item>
+        <item name="android:windowBackground">@color/bg_color</item>
+        <!-- 让状态栏图标根据日夜自动变黑或变白 -->
+        <item name="android:windowLightStatusBar">?attr/isLightTheme</item>
+    </style>
+</resources>

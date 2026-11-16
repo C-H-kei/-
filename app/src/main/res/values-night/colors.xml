@@ -1,0 +1,19 @@
+<resources>
+    <!-- 夜间粉色稍微柔和一点，避免刺眼 -->
+    <color name="brand_pink">#FF8FAB</color>
+    <color name="brand_pink_light">#2C1F23</color>
+
+    <!-- 夜间背景：用极深的灰色，不要用纯黑，纯黑对比度太刺眼 -->
+    <color name="bg_color">#121212</color>
+    <color name="card_bg">#1E1E1E</color>
+    <color name="stroke_color">#333333</color>
+
+    <!-- 夜间文字 -->
+    <color name="text_main">#F2F2F7</color>
+    <color name="text_sub">#8E8E93</color>
+
+    <!-- 准备页状态栏专用 -->
+    <color name="banner_bg_normal">#331A1A</color>
+    <color name="banner_stroke_normal">#4D2626</color>
+    <color name="banner_text_normal">#FF6B6B</color>
+</resources>

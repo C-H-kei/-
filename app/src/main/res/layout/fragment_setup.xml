@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <TextView
+        android:id="@+id/tvServiceStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_status_banner"
+        android:padding="16dp"
+        android:text="无障碍服务：检查中…"
+        android:textSize="16sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:layout_marginBottom="12dp"
+        android:text="请确保完成以下设置（尤其是在荣耀/华为设备上）："
+        android:textColor="@color/text_sub" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnOpenAccessibility"
+        style="@style/Widget.Material3.Button.OutlinedButton"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:layout_marginBottom="12dp"
+        android:text="1. 开启无障碍服务"
+        android:textColor="@color/text_main"
+        app:strokeColor="@color/stroke_color"
+        app:cornerRadius="16dp" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnIgnoreBattery"
+        style="@style/Widget.Material3.Button.OutlinedButton"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:layout_marginBottom="12dp"
+        android:text="2. 关闭电池优化"
+        android:textColor="@color/text_main"
+        app:strokeColor="@color/stroke_color"
+        app:cornerRadius="16dp" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnAppSettings"
+        style="@style/Widget.Material3.Button.OutlinedButton"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:text="3. 应用启动与后台权限"
+        android:textColor="@color/text_main"
+        app:strokeColor="@color/stroke_color"
+        app:cornerRadius="16dp" />
+
+</LinearLayout>

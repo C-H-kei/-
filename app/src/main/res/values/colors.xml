@@ -1,0 +1,19 @@
+<resources>
+    <!-- 主品牌色 -->
+    <color name="brand_pink">#FF6B8B</color>
+    <color name="brand_pink_light">#FFE6EC</color>
+
+    <!-- 背景与卡片 -->
+    <color name="bg_color">#F7F8FA</color>
+    <color name="card_bg">#FFFFFF</color>
+    <color name="stroke_color">#E5E5EA</color>
+
+    <!-- 文字 -->
+    <color name="text_main">#1C1C1E</color>
+    <color name="text_sub">#8E8E93</color>
+
+    <!-- 准备页状态栏专用 -->
+    <color name="banner_bg_normal">#FFF0F3</color>
+    <color name="banner_stroke_normal">#FFD1DC</color>
+    <color name="banner_text_normal">#D32F2F</color>
+</resources>
