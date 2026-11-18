@@ -30,22 +30,26 @@ class StoryLimitService : AccessibilityService() {
         private const val CHANNEL_ID_ALERT = "bili_limit_alert"
         private const val NOTIFICATION_ID_ALERT = 1002
 
+        // ===== 广播 Action =====
+        const val ACTION_START_CAPTURE = "com.example.bililimit.START_CAPTURE"
+        const val ACTION_APP_CAPTURED = "com.example.bililimit.APP_CAPTURED"
+        const val EXTRA_PKG = "pkg"
+        const val EXTRA_CLASS = "class"
+        const val EXTRA_IDS = "ids"
+
+        const val ACTION_RESET_TODAY = "com.example.bililimit.RESET_TODAY"
+        // =======================
+
         private const val TICK_FAR_MS = 2000L
         private const val TICK_NEAR_MS = 500L
         private const val NEAR_THRESHOLD_MS = 30_000L
-
-        /** 剩余不足这个时间时发一次预警 */
         private const val WARNING_THRESHOLD_MS = 30_000L
-
-        /** 离开竖屏页后的宽限期，期间回来不清零 */
         private const val SESSION_GRACE_MS = 60_000L
-
         private const val THROTTLE_IDLE_MS = 500L
         private const val THROTTLE_ACTIVE_MS = 1000L
         private const val PERSIST_INTERVAL_MS = 15_000L
         private const val MAX_SCAN_NODES = 400
         private const val NOTIFY_THROTTLE_MS = 1000L
-        private const val EXTRA_MAX_SNAPSHOT_IDS = 60
     }
 
     private val prefs: Prefs by lazy { Prefs(this) }
@@ -91,6 +95,32 @@ class StoryLimitService : AccessibilityService() {
         }
     }
 
+    // 接收 UI 发来的抓取指令
+    private val captureCommandReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == ACTION_START_CAPTURE) {
+                Log.d(TAG, "接收到抓取指令，开始抓取")
+                performCapture()
+            }
+        }
+    }
+
+    // 接收重置指令
+    private val resetReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == ACTION_RESET_TODAY) {
+                todaySec = 0.0
+                sessionAccumulatedMs = 0L
+                segmentStartAt = 0L
+                foregroundInStory = false // 👈 新增：强制退出前台判定
+                blockedUntil = 0L         // 👈 新增：强制解除冷却时间！
+                endSession()
+                persistUsage()
+                Log.d(TAG, "收到重置指令，内存数据及冷却状态已清零")
+            }
+        }
+    }
+
     // ==================== 生命周期 ====================
 
     override fun onServiceConnected() {
@@ -99,6 +129,23 @@ class StoryLimitService : AccessibilityService() {
         checkDateRollover()
         ensureChannel()
         registerScreenReceiver()
+
+        // 注册重置指令接收器 (使用 ContextCompat，最稳)
+        androidx.core.content.ContextCompat.registerReceiver(
+            this,
+            resetReceiver,
+            IntentFilter(ACTION_RESET_TODAY),
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+
+        // 注册抓取指令接收器 (使用 ContextCompat)
+        androidx.core.content.ContextCompat.registerReceiver(
+            this,
+            captureCommandReceiver,
+            IntentFilter(ACTION_START_CAPTURE),
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+
         Log.d(TAG, "服务已连接，今日已刷 ${todaySec.toInt()} 秒")
     }
 
@@ -118,12 +165,16 @@ class StoryLimitService : AccessibilityService() {
         handler.removeCallbacksAndMessages(null)
         persistUsage()
         cancelNotification()
-        try {
-            unregisterReceiver(screenOffReceiver)
-        } catch (t: Throwable) {
-        }
-    }
 
+        // 注销熄屏广播
+        try { unregisterReceiver(screenOffReceiver) } catch (t: Throwable) {}
+
+        // 注销抓取指令广播
+        try { unregisterReceiver(captureCommandReceiver) } catch (t: Throwable) {}
+
+        // 【新增】注销重置指令广播
+        try { unregisterReceiver(resetReceiver) } catch (t: Throwable) {}
+    }
     private fun registerScreenReceiver() {
         val filter = IntentFilter(Intent.ACTION_SCREEN_OFF)
         try {
@@ -143,6 +194,9 @@ class StoryLimitService : AccessibilityService() {
         val e = event ?: return
         val pkg = e.packageName?.toString() ?: return
 
+        // 👈 加上这行，看看到底浏览器/设置/桌面哪个包名在做动作
+        android.util.Log.d("BiliLimitCheck", "收到事件 -> 包名: $pkg, 启用列表: ${prefs.enabledPackages}")
+
         when (e.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                 if (pkg in prefs.enabledPackages) {
@@ -152,14 +206,16 @@ class StoryLimitService : AccessibilityService() {
                     handlePageChange(pkg, cls)
                 } else {
                     if (foregroundInStory) {
-                        Log.d(TAG, "离开 B站前台（$pkg），暂停计时但保留会话")
                         leaveStory()
                     }
                 }
             }
 
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                if (pkg !in prefs.enabledPackages) return
+                if (pkg !in prefs.enabledPackages) {
+                    // 被这里拦截了！
+                    return
+                }
 
                 val now = SystemClock.elapsedRealtime()
                 val throttle = if (foregroundInStory) THROTTLE_ACTIVE_MS else THROTTLE_IDLE_MS
@@ -172,8 +228,6 @@ class StoryLimitService : AccessibilityService() {
     }
 
     private fun handlePageChange(pkg: String, eventClassName: String?) {
-        maybeTakeSnapshot()
-
         val nowStory = isStoryMode(pkg, eventClassName)
         if (nowStory == foregroundInStory) return
 
@@ -183,25 +237,58 @@ class StoryLimitService : AccessibilityService() {
     // ==================== 页面判定 ====================
 
     private fun isStoryMode(pkg: String, eventClassName: String?): Boolean {
-        if (!prefs.enabledPackages.contains(pkg)) return false
-
-        val config = AppRules.getAppConfig(pkg) ?: return false
-
-        // 1. 读取类名规则：优先用户自定义，其次默认
-        val classRules = prefs.getCustomClassRules(pkg) ?: config.classRules
-        val cls = eventClassName ?: lastWindowClass
-        if (classRules.isNotEmpty() && !cls.isNullOrBlank()) {
-            if (classRules.any { cls.contains(it, ignoreCase = true) }) return true
+        if (!prefs.enabledPackages.contains(pkg)) {
+            android.util.Log.d("BiliLimitCheck", "未勾选应用: $pkg")
+            return false
         }
 
-        // 2. 读取 ViewId 规则：优先用户自定义，其次默认
-        val idRules = prefs.getCustomIdRules(pkg) ?: config.idRules
-        if (idRules.isEmpty()) return false
+        val cls = eventClassName ?: lastWindowClass
+        android.util.Log.d("BiliLimitCheck", "正在判断 $pkg，类名: $cls")
 
-        val root = safeRoot() ?: return false
-        if (root.packageName?.toString() != pkg) return false
+        val customRules = prefs.getRuleItems(pkg)
+        if (customRules.isNotEmpty()) {
+            android.util.Log.d("BiliLimitCheck", "应用 $pkg 有 ${customRules.size} 条自定义规则")
+            for (rule in customRules) {
+                if (rule.cls.isNotBlank() && !cls.isNullOrBlank()) {
+                    if (cls.contains(rule.cls, ignoreCase = true)) {
+                        android.util.Log.d("BiliLimitCheck", "匹配成功：类名命中 ${rule.cls}")
+                        return true
+                    }
+                }
+                if (rule.ids.isNotBlank()) {
+                    val idList = rule.ids.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                    if (idList.isNotEmpty()) {
+                        val root = safeRoot() ?: continue
+                        if (root.packageName?.toString() == pkg && scanForIds(root, idList, MAX_SCAN_NODES) { it.isNotEmpty() }) {
+                            android.util.Log.d("BiliLimitCheck", "匹配成功：ViewId 命中")
+                            return true
+                        }
+                    }
+                }
+            }
+            android.util.Log.d("BiliLimitCheck", "自定义规则未命中，准备进入兜底逻辑")
+        }
 
-        return scanForIds(root, idRules, MAX_SCAN_NODES) { it.isNotEmpty() }
+        // 兜底逻辑
+        val config = prefs.getAllApps().find { it.packageName == pkg } ?: return false
+        if (config.classRules.isNotEmpty() && !cls.isNullOrBlank()) {
+            if (config.classRules.any { cls.contains(it, ignoreCase = true) }) {
+                android.util.Log.d("BiliLimitCheck", "内置类名命中")
+                return true
+            }
+        }
+
+        if (config.idRules.isNotEmpty()) {
+            val root = safeRoot() ?: return false
+            if (root.packageName?.toString() != pkg) return false
+            if (scanForIds(root, config.idRules, MAX_SCAN_NODES) { it.isNotEmpty() }) {
+                android.util.Log.d("BiliLimitCheck", "内置 ViewId 命中")
+                return true
+            }
+        }
+
+        android.util.Log.d("BiliLimitCheck", "所有规则均未命中")
+        return false
     }
     private fun safeRoot(): AccessibilityNodeInfo? = try {
         rootInActiveWindow
@@ -224,31 +311,17 @@ class StoryLimitService : AccessibilityService() {
             val node = queue.removeFirst()
             visited++
 
-            val vid = try {
-                node.viewIdResourceName
-            } catch (t: Throwable) {
-                null
-            }
-
+            val vid = try { node.viewIdResourceName } catch (t: Throwable) { null }
             if (vid != null && rules.any { vid.contains(it, ignoreCase = true) }) {
                 hits.add(vid)
                 if (stopWhen(hits)) return true
             }
 
-            val childCount = try {
-                node.childCount
-            } catch (t: Throwable) {
-                0
-            }
-
+            val childCount = try { node.childCount } catch (t: Throwable) { 0 }
             for (i in 0 until childCount) {
-                try {
-                    node.getChild(i)?.let { queue.add(it) }
-                } catch (t: Throwable) {
-                }
+                try { node.getChild(i)?.let { queue.add(it) } } catch (t: Throwable) {}
             }
         }
-
         return false
     }
 
@@ -256,12 +329,10 @@ class StoryLimitService : AccessibilityService() {
 
     private fun enterStory() {
         checkDateRollover()
-
         val now = SystemClock.elapsedRealtime()
         foregroundInStory = true
 
         if (now < blockedUntil) {
-            Log.d(TAG, "处于冷却期内，直接拦截（剩余 ${(blockedUntil - now) / 1000} 秒）")
             endSession()
             doBlock()
             return
@@ -272,10 +343,7 @@ class StoryLimitService : AccessibilityService() {
         if (!sessionActive) {
             sessionActive = true
             sessionAccumulatedMs = 0L
-            warningSent = false      // 新会话才重置预警标记
-            Log.d(TAG, "开启新会话")
-        } else {
-            Log.d(TAG, "继续会话，已累计 ${sessionAccumulatedMs / 1000} 秒")
+            warningSent = false
         }
 
         segmentStartAt = now
@@ -302,8 +370,6 @@ class StoryLimitService : AccessibilityService() {
             handler.removeCallbacks(sessionTimeoutRunnable)
             handler.postDelayed(sessionTimeoutRunnable, SESSION_GRACE_MS)
         }
-
-        Log.d(TAG, "离开竖屏页，本轮累计 ${sessionAccumulatedMs / 1000} 秒")
     }
 
     private fun endSession() {
@@ -344,13 +410,9 @@ class StoryLimitService : AccessibilityService() {
 
         updateNotification(currentSessionMs, remainMs, now)
 
-        // 剩余不足 30 秒时预警一次
         if (remainMs in 1L..WARNING_THRESHOLD_MS && !warningSent) {
             warningSent = true
-            sendAlert(
-                "还有 ${remainMs / 1000} 秒",
-                "B 站短视频额度即将用完"
-            )
+            sendAlert("还有 ${remainMs / 1000} 秒", "短视频额度即将用完")
         }
 
         if (remainMs <= 0L) {
@@ -366,16 +428,10 @@ class StoryLimitService : AccessibilityService() {
     // ==================== 超时处理 ====================
 
     private fun onTimeout() {
-        Log.d(TAG, "达到限额，执行拦截")
-
         val cooldownMs = prefs.cooldownSec * 1000L
-        blockedUntil = if (cooldownMs > 0L) {
-            SystemClock.elapsedRealtime() + cooldownMs
-        } else {
-            0L
-        }
+        blockedUntil = if (cooldownMs > 0L) SystemClock.elapsedRealtime() + cooldownMs else 0L
 
-        foregroundInStory = false   // 强制复位，防止 WSC 事件丢失导致卡死
+        foregroundInStory = false
         endSession()
 
         persistUsage()
@@ -388,23 +444,10 @@ class StoryLimitService : AccessibilityService() {
         val now = SystemClock.elapsedRealtime()
         val cooldownRemain = ((blockedUntil - now) / 1000).coerceAtLeast(0L)
 
-        val reason = if (todaySec * 1000.0 >= prefs.dailyLimitSec * 1000L)
-            "今日总时长已用完" else "本次时长已用完"
+        val reason = if (todaySec * 1000.0 >= prefs.dailyLimitSec * 1000L) "今日总时长已用完" else "本次时长已用完"
+        val detail = if (cooldownRemain > 0L) "$reason，冷却 ${cooldownRemain / 60} 分 ${cooldownRemain % 60} 秒" else "$reason（可直接重进）"
 
-        val detail = if (cooldownRemain > 0L)
-            "$reason，冷却 ${cooldownRemain / 60} 分 ${cooldownRemain % 60} 秒"
-        else
-            "$reason（可直接重进）"
-
-        val big = buildString {
-            append(detail).append("\n\n")
-            append("单次上限 ").append(prefs.singleLimitSec / 60).append(" 分钟\n")
-            append("今日已刷 ").append((todaySec / 60).toInt())
-            append(" 分钟 / ").append(prefs.dailyLimitSec / 60).append(" 分钟\n")
-            append("累计拦截 ").append(prefs.blockCount).append(" 次")
-        }
-
-        sendAlert("已退出目标应用", detail, big)
+        sendAlert("已退出目标应用", detail)
 
         when (prefs.timeUpAction) {
             Prefs.ACTION_LOCK -> {
@@ -419,7 +462,43 @@ class StoryLimitService : AccessibilityService() {
         cancelNotification()
     }
 
-    // ==================== 跨天重置 ====================
+    // ==================== 抓取逻辑 ====================
+
+    private fun performCapture() {
+        val root = safeRoot() ?: return
+        val pkg = root.packageName?.toString() ?: return
+        val cls = lastWindowClass ?: root.className?.toString() ?: ""
+
+        val ids = mutableSetOf<String>()
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var visited = 0
+
+        while (queue.isNotEmpty() && visited < 800) {
+            val node = queue.removeFirst()
+            visited++
+            node.viewIdResourceName?.let {
+                if (!it.startsWith("android:id")) {
+                    // 【核心修改】自动截取 :id/ 后面的部分，去掉前缀
+                    val cleanId = it.substringAfter(":id/", it)
+                    ids.add(cleanId)
+                }
+            }
+            for (i in 0 until node.childCount) {
+                try { node.getChild(i)?.let { queue.add(it) } } catch (e: Throwable) {}
+            }
+        }
+
+        val resultIntent = Intent(ACTION_APP_CAPTURED).apply {
+            setPackage(packageName)
+            putExtra(EXTRA_PKG, pkg)
+            putExtra(EXTRA_CLASS, cls)
+            putExtra(EXTRA_IDS, ids.joinToString(","))
+        }
+        sendBroadcast(resultIntent)
+    }
+
+    // ==================== 跨天重置与持久化 ====================
 
     private fun checkDateRollover() {
         val today = dateFormat.format(Date())
@@ -428,74 +507,19 @@ class StoryLimitService : AccessibilityService() {
             return
         }
         if (today != lastDateKey) {
-            Log.d(TAG, "跨天：$lastDateKey → $today，重置用量")
             todaySec = 0.0
             lastDateKey = today
             prefs.resetToday()
         }
     }
 
-    // ==================== 节点快照 ====================
-
-    private fun maybeTakeSnapshot() {
-        val until = prefs.snapshotUntil
-        if (until <= 0L) return
-        if (System.currentTimeMillis() > until) {
-            prefs.snapshotUntil = 0L
-            return
-        }
-        prefs.snapshotUntil = 0L
-
-        handler.postDelayed({
-            val pkg = safeRoot()?.packageName?.toString()
-            if (pkg in prefs.enabledPackages) {
-                takeSnapshot()
-            } else {
-                prefs.snapshotUntil = System.currentTimeMillis() + 30_000L
-            }
-        }, 800L)
-    }
-
-    private fun takeSnapshot() {
-        val root = safeRoot() ?: return
-        val ids = LinkedHashSet<String>()
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
-        var visited = 0
-
-        while (queue.isNotEmpty() &&
-            visited < MAX_SCAN_NODES &&
-            ids.size < EXTRA_MAX_SNAPSHOT_IDS
-        ) {
-            val node = queue.removeFirst()
-            visited++
-
-            try {
-                node.viewIdResourceName?.let { ids.add(it) }
-            } catch (t: Throwable) {
-            }
-
-            val childCount = try {
-                node.childCount
-            } catch (t: Throwable) {
-                0
-            }
-
-            for (i in 0 until childCount) {
-                try {
-                    node.getChild(i)?.let { queue.add(it) }
-                } catch (t: Throwable) {
-                }
-            }
-        }
-
-        prefs.lastSnapshot = ids.joinToString("\n")
-        Log.d(TAG, "节点快照完成，共 ${ids.size} 个 viewId")
-    }
-
     private fun recordLastSeen(className: String?) {
         if (className.isNullOrBlank()) return
         prefs.lastSeenClass = className
+    }
+
+    private fun persistUsage() {
+        prefs.saveTodaySeconds(todaySec.toInt())
     }
 
     // ==================== 通知 ====================
@@ -506,9 +530,7 @@ class StoryLimitService : AccessibilityService() {
 
         if (nm.getNotificationChannel(CHANNEL_ID) == null) {
             nm.createNotificationChannel(
-                NotificationChannel(
-                    CHANNEL_ID, "专注计时", NotificationManager.IMPORTANCE_LOW
-                ).apply {
+                NotificationChannel(CHANNEL_ID, "短视频计时", NotificationManager.IMPORTANCE_LOW).apply {
                     description = "显示当前已刷时长和剩余额度"
                     setShowBadge(false)
                 }
@@ -517,9 +539,7 @@ class StoryLimitService : AccessibilityService() {
 
         if (nm.getNotificationChannel(CHANNEL_ID_ALERT) == null) {
             nm.createNotificationChannel(
-                NotificationChannel(
-                    CHANNEL_ID_ALERT, "额度提醒", NotificationManager.IMPORTANCE_HIGH
-                ).apply {
+                NotificationChannel(CHANNEL_ID_ALERT, "额度提醒", NotificationManager.IMPORTANCE_HIGH).apply {
                     description = "额度即将用完与超限通知"
                     enableVibration(true)
                 }
@@ -540,37 +560,26 @@ class StoryLimitService : AccessibilityService() {
             .setShowWhen(false)
 
         try {
-            getSystemService(NotificationManager::class.java)
-                ?.notify(NOTIFICATION_ID, builder.build())
-        } catch (t: Throwable) {
-            Log.w(TAG, "通知发送失败", t)
-        }
+            getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, builder.build())
+        } catch (t: Throwable) {}
     }
 
-    private fun sendAlert(title: String, text: String, big: String? = null) {
+    private fun sendAlert(title: String, text: String) {
         val builder = Notification.Builder(this, CHANNEL_ID_ALERT)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setContentTitle(title)
             .setContentText(text)
             .setAutoCancel(true)
 
-        if (big != null) {
-            builder.setStyle(Notification.BigTextStyle().bigText(big))
-        }
-
         try {
-            getSystemService(NotificationManager::class.java)
-                ?.notify(NOTIFICATION_ID_ALERT, builder.build())
-        } catch (t: Throwable) {
-            Log.w(TAG, "预警通知发送失败", t)
-        }
+            getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID_ALERT, builder.build())
+        } catch (t: Throwable) {}
     }
 
     private fun cancelNotification() {
         try {
             getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID)
-        } catch (t: Throwable) {
-        }
+        } catch (t: Throwable) {}
     }
 
     private fun fmt(ms: Long): String {
@@ -578,11 +587,5 @@ class StoryLimitService : AccessibilityService() {
         val m = total / 60
         val s = total % 60
         return if (m > 0) "${m}分${s}秒" else "${s}秒"
-    }
-
-    // ==================== 持久化 ====================
-
-    private fun persistUsage() {
-        prefs.saveTodaySeconds(todaySec.toInt())
     }
 }

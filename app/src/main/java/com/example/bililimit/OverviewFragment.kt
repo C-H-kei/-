@@ -28,6 +28,13 @@ class OverviewFragment : Fragment() {
                 .setPositiveButton("确定重置") { _, _ ->
                     prefs.resetToday()
                     prefs.blockCount = 0 // 顺手把拦截次数也清了
+
+                    // 发送广播，强制后台服务清零
+                    val intent = android.content.Intent(StoryLimitService.ACTION_RESET_TODAY).apply {
+                        setPackage(requireContext().packageName)
+                    }
+
+                    requireContext().sendBroadcast(intent)
                     refreshUi(view)
                     android.widget.Toast.makeText(requireContext(), "已重置", android.widget.Toast.LENGTH_SHORT).show()
                 }

@@ -6,26 +6,26 @@
     android:padding="20dp">
 
     <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="类名关键字（逗号分隔）"
-        android:textStyle="bold" />
-    <EditText
-        android:id="@+id/etEditClass"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="例如：StoryVideoActivity" />
+        android:text="已配置的识别规则："
+        android:textStyle="bold"
+        android:textColor="@color/text_main" />
 
-    <TextView
-        android:layout_width="wrap_content"
+    <!-- 动态规则列表容器 -->
+    <LinearLayout
+        android:id="@+id/llRuleContainer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginTop="8dp" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnAddNewRule"
+        style="@style/Widget.Material3.Button.TonalButton"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
-        android:text="ViewId 关键字（逗号分隔）"
-        android:textStyle="bold" />
-    <EditText
-        android:id="@+id/etEditId"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:hint="例如：story_view_pager" />
+        android:text="+ 添加新规则" />
 
 </LinearLayout>

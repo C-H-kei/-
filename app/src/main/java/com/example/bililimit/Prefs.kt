@@ -7,6 +7,11 @@ import java.util.Locale
 
 class Prefs(context: Context) {
 
+    // 保存用户自定义的 App 列表
+    var customAppsJson: String
+        get() = sp.getString("custom_apps_json", "[]") ?: "[]"
+        set(value) = sp.edit().putString("custom_apps_json", value).apply()
+
     var themeMode: Int
         get() = sp.getInt("theme_mode", 0) // 默认跟随系统
         set(value) = sp.edit().putInt("theme_mode", value).apply()
@@ -103,6 +108,46 @@ class Prefs(context: Context) {
         sp.edit().putString(KEY_USAGE_DATE, todayKey()).putInt(KEY_USAGE_SEC, 0).apply()
     }
 
+    fun getAllApps(): List<AppConfig> {
+        val list = mutableListOf<AppConfig>()
+        list.addAll(AppRules.BUILTIN_APPS)
+
+        try {
+            val arr = org.json.JSONArray(customAppsJson)
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                list.add(AppConfig(
+                    packageName = obj.getString("pkg"),
+                    appName = obj.optString("name", obj.getString("pkg")),
+                    classRules = obj.optString("cls").split(",").filter { it.isNotBlank() },
+                    idRules = obj.optString("ids").split(",").filter { it.isNotBlank() },
+                    isCustom = true
+                ))
+            }
+        } catch (e: Exception) {}
+
+        // 过滤掉重复的包名（例如用户添加了 B 站，就覆盖内置的）
+        return list.distinctBy { it.packageName }
+    }
+
+    // 添加一个新的自定义应用
+    fun addCustomApp(config: AppConfig) {
+        val list = getAllApps().filter { it.isCustom }.toMutableList()
+        list.removeAll { it.packageName == config.packageName }
+        list.add(config)
+
+        val arr = org.json.JSONArray()
+        for (app in list) {
+            val obj = org.json.JSONObject()
+            obj.put("pkg", app.packageName)
+            obj.put("name", app.appName)
+            obj.put("cls", app.classRules.joinToString(","))
+            obj.put("ids", app.idRules.joinToString(","))
+            arr.put(obj)
+        }
+        customAppsJson = arr.toString()
+    }
+
     // ---------------- 内部工具 ----------------
 
     private fun todayKey(): String =
@@ -113,6 +158,70 @@ class Prefs(context: Context) {
             .map { it.trim() }
             .filter { it.isNotEmpty() }
 
+
+    // ===== 多规则管理 =====
+
+    // 读取某个包名的所有规则
+    fun getRuleItems(pkg: String): List<RuleItem> {
+        val json = sp.getString("rules_$pkg", "[]")
+        val list = mutableListOf<RuleItem>()
+        try {
+            val arr = org.json.JSONArray(json)
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                list.add(RuleItem(
+                    alias = obj.optString("alias"),
+                    cls = obj.optString("cls"),
+                    ids = obj.optString("ids")
+                ))
+            }
+        } catch (e: Exception) {}
+        return list
+    }
+
+    // 保存某个包名的所有规则
+    fun saveRuleItems(pkg: String, items: List<RuleItem>) {
+        val arr = org.json.JSONArray()
+        for (item in items) {
+            val obj = org.json.JSONObject()
+            obj.put("alias", item.alias)
+            obj.put("cls", item.cls)
+            obj.put("ids", item.ids)
+            arr.put(obj)
+        }
+        sp.edit().putString("rules_$pkg", arr.toString()).apply()
+    }
+
+    // 添加单条规则
+    fun addRuleItem(pkg: String, item: RuleItem) {
+        val list = getRuleItems(pkg).toMutableList()
+        list.add(item)
+        saveRuleItems(pkg, list)
+    }
+
+    // 彻底移除自定义应用及其所有规则
+    fun removeCustomApp(pkg: String) {
+        // 1. 从勾选列表中移除
+        val enabled = enabledPackages.toMutableSet()
+        enabled.remove(pkg)
+        enabledPackages = enabled
+
+        // 2. 清空它的自定义规则
+        sp.edit().remove("rules_$pkg").apply()
+
+        // 3. 从 custom_apps_json 中移除
+        val currentList = getAllApps().filter { it.isCustom && it.packageName != pkg }
+        val arr = org.json.JSONArray()
+        for (app in currentList) {
+            val obj = org.json.JSONObject()
+            obj.put("pkg", app.packageName)
+            obj.put("name", app.appName)
+            obj.put("cls", app.classRules.joinToString(","))
+            obj.put("ids", app.idRules.joinToString(","))
+            arr.put(obj)
+        }
+        customAppsJson = arr.toString()
+    }
     companion object {
 
         private const val KEY_ENABLED_PACKAGES = "enabled_packages"

@@ -1,9 +1,11 @@
 package com.example.bililimit
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RadioGroup
@@ -32,11 +34,25 @@ class SettingsFragment : Fragment() {
         setupThemeClick(view)
         loadSettings(view)
 
+        // 保存设置按钮
         view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnSave).setOnClickListener {
             saveSettings(view)
             saveEnabledApps(view)
             Toast.makeText(requireContext(), "已保存", Toast.LENGTH_SHORT).show()
         }
+
+        // ====== 新增：智能识别新应用按钮 ======
+        view.findViewById<Button>(R.id.btnAddCustomApp).setOnClickListener {
+            // 跳转到 CaptureActivity
+            startActivity(Intent(requireContext(), CaptureActivity::class.java))
+        }
+        // ======================================
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 每次回到该页面（包括从抓取页面返回），都重新刷新应用列表
+        view?.let { setupAppList(it) }
     }
 
     // ================= 限制应用列表 =================
@@ -45,7 +61,10 @@ class SettingsFragment : Fragment() {
         llAppList.removeAllViews()
         val enabledPackages = prefs.enabledPackages
 
-        for (app in AppRules.KNOWN_APPS) {
+        // 获取所有应用（内置 + 自定义）
+        val allApps = prefs.getAllApps()
+
+        for (app in allApps) {
             val row = LinearLayout(requireContext()).apply {
                 orientation = LinearLayout.HORIZONTAL
                 layoutParams = LinearLayout.LayoutParams(
@@ -61,13 +80,23 @@ class SettingsFragment : Fragment() {
                 isChecked = enabledPackages.contains(app.packageName)
                 tag = app.packageName
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+
+                setOnCheckedChangeListener { _, isChecked ->
+                    val currentEnabled = prefs.enabledPackages.toMutableSet()
+                    if (isChecked) {
+                        currentEnabled.add(app.packageName)
+                    } else {
+                        currentEnabled.remove(app.packageName)
+                    }
+                    prefs.enabledPackages = currentEnabled
+                }
             }
 
             val btnEdit = com.google.android.material.button.MaterialButton(requireContext()).apply {
                 text = "修改规则"
-                textSize = 14f
+                textSize = 13f
                 setTextColor(android.graphics.Color.parseColor("#FF6B8B"))
-                background = null // 去掉背景，看起来像纯文本
+                background = null
                 setOnClickListener {
                     showEditDialog(app)
                 }
@@ -75,6 +104,31 @@ class SettingsFragment : Fragment() {
 
             row.addView(checkBox)
             row.addView(btnEdit)
+
+            // 【新增】如果是自定义应用，额外显示一个删除按钮
+            if (app.isCustom) {
+                val btnDelete = com.google.android.material.button.MaterialButton(requireContext()).apply {
+                    text = "删除"
+                    textSize = 13f
+                    setTextColor(android.graphics.Color.parseColor("#FF4444")) // 红色
+                    background = null
+                    setOnClickListener {
+                        // 二次确认
+                        com.google.android.material.dialog.MaterialAlertDialogBuilder(requireContext())
+                            .setTitle("移除应用")
+                            .setMessage("确定要彻底移除「${app.appName}」及其所有规则吗？")
+                            .setNegativeButton("取消", null)
+                            .setPositiveButton("确定移除") { _, _ ->
+                                prefs.removeCustomApp(app.packageName)
+                                setupAppList(view) // 刷新列表
+                                Toast.makeText(requireContext(), "已移除", Toast.LENGTH_SHORT).show()
+                            }
+                            .show()
+                    }
+                }
+                row.addView(btnDelete)
+            }
+
             llAppList.addView(row)
         }
     }
@@ -97,51 +151,90 @@ class SettingsFragment : Fragment() {
     }
 
     // ================= 修改规则弹窗 =================
+    // ================= 多规则弹窗管理 =================
     private fun showEditDialog(app: AppConfig) {
         val dialogView = layoutInflater.inflate(R.layout.dialog_edit_rules, null)
-        val etClass = dialogView.findViewById<EditText>(R.id.etEditClass)
-        val etId = dialogView.findViewById<EditText>(R.id.etEditId)
+        val llContainer = dialogView.findViewById<LinearLayout>(R.id.llRuleContainer)
+        val btnAddNewRule = dialogView.findViewById<Button>(R.id.btnAddNewRule)
 
-        val currentClass = prefs.getCustomClassRules(app.packageName) ?: app.classRules
-        val currentId = prefs.getCustomIdRules(app.packageName) ?: app.idRules
-        etClass.setText(currentClass.joinToString(","))
-        etId.setText(currentId.joinToString(","))
+        // 刷新弹窗内列表的函数
+        fun refreshList() {
+            llContainer.removeAllViews()
+            val rules = prefs.getRuleItems(app.packageName)
 
-        // 第一层弹窗：输入规则
-        MaterialAlertDialogBuilder(requireContext())
-            .setTitle("修改「${app.appName}」识别规则")
+            if (rules.isEmpty()) {
+                val tvEmpty = TextView(requireContext()).apply {
+                    text = "暂无规则，请点击下方按钮去抓取"
+                    textSize = 14f
+                    setTextColor(android.graphics.Color.GRAY)
+                    setPadding(0, 20, 0, 20)
+                }
+                llContainer.addView(tvEmpty)
+            } else {
+                rules.forEach { rule ->
+                    val row = LinearLayout(requireContext()).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        setPadding(0, 12, 0, 12)
+                        gravity = android.view.Gravity.CENTER_VERTICAL
+                    }
+
+                    val info = TextView(requireContext()).apply {
+                        text = "别名：${rule.alias}\n类: ${rule.cls.ifBlank { "无" }} \nID: ${rule.ids.take(30)}..."
+                        textSize = 14f
+                        setTextColor(androidx.core.content.ContextCompat.getColor(requireContext(), R.color.text_main))
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    }
+
+                    val btnDelete = com.google.android.material.button.MaterialButton(requireContext()).apply {
+                        text = "删除"
+                        textSize = 13f
+                        setTextColor(android.graphics.Color.RED)
+                        background = null
+                        setOnClickListener {
+                            val current = prefs.getRuleItems(app.packageName).toMutableList()
+                            current.remove(rule)
+                            prefs.saveRuleItems(app.packageName, current)
+                            refreshList()
+                            Toast.makeText(requireContext(), "已删除该规则", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+
+                    val divider = View(requireContext()).apply {
+                        layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1)
+                        setBackgroundColor(android.graphics.Color.LTGRAY)
+                        alpha = 0.3f
+                    }
+
+                    row.addView(info)
+                    row.addView(btnDelete)
+                    llContainer.addView(row)
+                    llContainer.addView(divider)
+                }
+            }
+        }
+
+        // 初始化列表
+        refreshList()
+
+        // 创建 Dialog 对象（这次我们把它存下来，方便后面关闭）
+        val dialog = com.google.android.material.dialog.MaterialAlertDialogBuilder(requireContext())
+            .setTitle("「${app.appName}」规则管理")
             .setView(dialogView)
-            .setPositiveButton("下一步") { _, _ ->
-                val newClass = etClass.text.toString()
-                val newId = etId.text.toString()
+            .setNegativeButton("关闭", null)
+            .create()
 
-                // 第二层弹窗：确认修改
-                MaterialAlertDialogBuilder(requireContext())
-                    .setTitle("确认修改")
-                    .setMessage("规则被修改后，如果填错可能会导致拦截失效。\n\n确定要保存这些新规则吗？")
-                    .setNegativeButton("取消", null)
-                    .setPositiveButton("确认保存") { _, _ ->
-                        prefs.setCustomClassRules(app.packageName, newClass)
-                        prefs.setCustomIdRules(app.packageName, newId)
-                        Toast.makeText(requireContext(), "已保存自定义规则", Toast.LENGTH_SHORT).show()
-                    }
-                    .show()
-            }
-            .setNegativeButton("恢复默认") { _, _ ->
-                // 恢复默认最好也加个二次确认
-                MaterialAlertDialogBuilder(requireContext())
-                    .setTitle("恢复默认规则")
-                    .setMessage("确定要清空自定义规则，恢复内置的默认规则吗？")
-                    .setPositiveButton("确认恢复") { _, _ ->
-                        prefs.setCustomClassRules(app.packageName, "")
-                        prefs.setCustomIdRules(app.packageName, "")
-                        Toast.makeText(requireContext(), "已恢复出厂规则", Toast.LENGTH_SHORT).show()
-                    }
-                    .setNegativeButton("取消", null)
-                    .show()
-            }
-            .setNeutralButton("取消", null)
-            .show()
+        // 点击添加新规则 -> 跳转到独立的新页面
+        btnAddNewRule.setOnClickListener {
+            dialog.dismiss() // 关闭当前弹窗
+
+            // 跳转到独立的规则编辑页，并带上目标 App 信息
+            val intent = android.content.Intent(requireContext(), RuleEditorActivity::class.java)
+            intent.putExtra("EXTRA_TARGET_PKG", app.packageName)
+            intent.putExtra("EXTRA_TARGET_APP_NAME", app.appName)
+            startActivity(intent)
+        }
+
+        dialog.show()
     }
 
     // ================= 外观设置 =================
